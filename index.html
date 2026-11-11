@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Авто-сборщик (Слои и интерактив)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <style>
+        body { margin: 0; display: flex; height: 100vh; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #2c2c2c; color: #fff; }
+        #sidebar { width: 350px; background: #1e1e1e; padding: 20px; box-shadow: 2px 0 10px rgba(0,0,0,0.5); display: flex; flex-direction: column; gap: 15px; overflow-y: auto; z-index: 10; }
+        #main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #3a3a3a; padding: 20px; }
+        
+        /* Добавили position: relative для позиционирования всплывающего окна */
+        #canvas-container { background: #fff; box-shadow: 0 4px 15px rgba(0,0,0,0.3); border-radius: 4px; position: relative; overflow: hidden; }
+        
+        textarea, select { width: 100%; padding: 10px; box-sizing: border-box; background: #333; border: 1px solid #555; color: #fff; border-radius: 4px; }
+        button { padding: 12px; background: #0078D7; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; transition: background 0.2s; }
+        button:hover { background: #005A9E; }
+        .hint { font-size: 12px; color: #aaa; margin-top: 5px; line-height: 1.4; }
+        label { font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block; }
+        #status { font-size: 13px; color: #ffd166; margin-top: 10px; min-height: 40px; word-wrap: break-word;}
+
+        /* Стили для всплывающего окна слоев */
+        #layer-popup {
+            position: absolute;
+            display: none;
+            background: #222;
+            border: 1px solid #555;
+            border-radius: 6px;
+            padding: 4px;
+            flex-direction: column;
+            gap: 4px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            z-index: 100;
+        }
+        #layer-popup button {
+            padding: 4px 8px;
+            font-size: 16px;
+            background: #0078D7;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            line-height: 1;
+        }
+        #layer-popup button:hover { background: #005A9E; }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h2>Генератор композиций</h2>
+        
+        <div>
+            <label>Объекты (имя-размер-тип)</label>
+            <textarea id="object-input" rows="4">телефон-L, лампа-L-bg, ручка-L</textarea>
+            <div class="hint">
+                <b>Размер:</b> L (крупный) или S (мелкий).<br>
+                <b>Тип:</b> bg (фоновый) или main (главный, по умолчанию).
+            </div>
+        </div>
+
+        <div>
+            <label>Цветовая схема</label>
+            <select id="color-scheme" onchange="composeScene()">
+                <option value="purple">Фиолетовая</option>
+                <option value="orange">Оранжевая</option>
+                <option value="teal">Бирюзовая</option>
+            </select>
+        </div>
+
+        <button onclick="composeScene()">Собрать композицию</button>
+        <button onclick="exportSVG()" style="background: #28a745; margin-top: 10px;">Скачать SVG</button>
+
+        <div id="status">Готов к работе...</div>
+    </div>
+
+    <div id="main">
+        <div id="canvas-container">
+            <canvas id="c" width="800" height="600"></canvas>
+            
+            <!-- Всплывающее окно для управления слоями -->
+            <div id="layer-popup">
+                <button id="btn-layer-up" title="Поднять на слой выше">▲</button>
+                <button id="btn-layer-down" title="Опустить на слой ниже">▼</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // === 1. НАСТРОЙКА ПАЛИТР И ФОНОВЫХ ФАЙЛОВ ===
+        const palettes = {
+            purple: {
+                bgFile: 'фон_фиолетовый',
+                bgColor: '#D7CDF5',
+                main: '#AA9BF0',     
+                dark: '#7864D7',
+                accent1: '#F9ECB0',
+                accent2: '#F9A3AA',
+                accent3: '#FFE3E1',
+                outline: '#181817',  
+                white: '#ffffff'
+            },
+            orange: {
+                bgFile: 'фон_оранжевый',
+                bgColor: '#FDD7B9',
+                main: '#FFD6A5',
+                dark: '#E76F51', 
+                accent1: '#FF9F1C',
+                accent2: '#E71D36',
+                accent3: '#FFE8D6',
+                outline: '#2B2B2B',
+                white: '#FFFCF2'
+            },
+            teal: {
+                bgFile: 'фон_бирюзовый',
+                bgColor: '#BEEBEB',
+                main: '#A0E8AF',
+                dark: '#0077B6', 
+                accent1: '#00B4D8',
+                accent2: '#FFB703',
+                accent3: '#90E0EF',
+                outline: '#03045E',
+                white: '#FFFFFF'
+            }
+        };
+
+        // === 2. ИНИЦИАЛИЗАЦИЯ ХОЛСТА ===
+        // Разрешаем выделение объектов для показа меню слоев
+        const canvas = new fabric.Canvas('c', { preserveObjectStacking: true, selection: true });
+        const popup = document.getElementById('layer-popup');
+
+        // === 3. ЛОГИКА ВСПЛЫВАЮЩЕГО ОКНА СЛОЕВ ===
+        function showLayerPopup() {
+            const activeObj = canvas.getActiveObject();
+            if (!activeObj || activeObj.type === 'activeSelection') {
+                popup.style.display = 'none';
+                return;
+            }
+
+            // Получаем координаты объекта на холсте
+            const rect = activeObj.getBoundingRect();
+            
+            // Позиционируем окно над объектом
+            popup.style.display = 'flex';
+            popup.style.left = (rect.left + rect.width / 2 - 20) + 'px';
+            // Если объект слишком близко к верху, показываем окно снизу
+            let topPos = rect.top - 60;
+            if (topPos < 0) topPos = rect.top + rect.height + 10;
+            popup.style.top = topPos + 'px';
+        }
+
+        function hideLayerPopup() {
+            popup.style.display = 'none';
+        }
+
+        // Привязка кнопок
+        document.getElementById('btn-layer-up').onclick = () => {
+            const activeObj = canvas.getActiveObject();
+            if (activeObj) {
+                canvas.bringForward(activeObj);
+                canvas.renderAll();
+                showLayerPopup();
+            }
+        };
+
+        document.getElementById('btn-layer-down').onclick = () => {
+            const activeObj = canvas.getActiveObject();
+            if (activeObj) {
+                canvas.sendBackwards(activeObj);
+                canvas.renderAll();
+                showLayerPopup();
+            }
+        };
+
+        // Отслеживание событий выделения и движения
+        canvas.on('selection:created', showLayerPopup);
+        canvas.on('selection:updated', showLayerPopup);
+        canvas.on('selection:cleared', hideLayerPopup);
+        canvas.on('object:moving', showLayerPopup);
+        canvas.on('object:scaling', showLayerPopup);
+
+        // === 4. ФУНКЦИЯ ЗАМЕНЫ ЦВЕТОВ ===
+        function processSVGColors(svgText, palette, isBackground) {
+            let newSvg = svgText;
+
+            if (isBackground) {
+                newSvg = newSvg.replace(/fill="([^"]+)"/gi, (match, color) => {
+                    const upperColor = color.toUpperCase();
+                    if (upperColor === 'NONE' || upperColor === 'TRANSPARENT') return match;
+                    if (upperColor === '#181817' || upperColor === '#2B2B2B' || upperColor === '#03045E' || upperColor === 'BLACK') {
+                        return `fill="${palette.dark}"`; 
+                    }
+                    return `fill="${palette.bgColor}"`; 
+                });
+                newSvg = newSvg.replace(/stroke="([^"]+)"/gi, (match, color) => {
+                    const upperColor = color.toUpperCase();
+                    if (upperColor === 'NONE' || upperColor === 'TRANSPARENT') return match;
+                    if (upperColor === '#181817' || upperColor === '#2B2B2B' || upperColor === '#03045E' || upperColor === 'BLACK') {
+                        return `stroke="${palette.dark}"`;
+                    }
+                    return `stroke="${palette.bgColor}"`;
+                });
+                return newSvg;
+            }
+
+            if (palette.bgColor === '#D7CDF5' && palette.accent1 === '#F9ECB0') return newSvg;
+
+            newSvg = newSvg.replace(/#D7CDF5/gi, palette.main);
+            newSvg = newSvg.replace(/#AA9BF0/gi, palette.main);
+            newSvg = newSvg.replace(/#7864D7/gi, palette.dark);
+            newSvg = newSvg.replace(/#F9ECB0/gi, palette.accent1);
+            newSvg = newSvg.replace(/#F9A3AA/gi, palette.accent2);
+            newSvg = newSvg.replace(/#FFE3E1/gi, palette.accent3);
+            newSvg = newSvg.replace(/#181817/gi, palette.outline);
+            newSvg = newSvg.replace(/#ffffff/gi, palette.white);
+            newSvg = newSvg.replace(/fill="white"/gi, `fill="${palette.white}"`);
+
+            return newSvg;
+        }
+
+        // === 5. ПАРСЕР ВВОДА (Обновлен под дефисы) ===
+        function parseObjects(inputText) {
+            let requestedObjects = [];
+            // Теперь разделяем по дефису вместо двоеточия
+            const parts = inputText.split(',').map(s => s.trim()).filter(Boolean);
+
+            parts.forEach(part => {
+                let segments = part.split('-').map(s => s.trim().toLowerCase());
+                let name = segments[0];
+                let size = 'L'; 
+                let type = 'main'; 
+
+                for (let i = 1; i < segments.length; i++) {
+                    if (segments[i] === 's' || segments[i] === 'l') size = segments[i].toUpperCase();
+                    if (segments[i] === 'bg' || segments[i] === 'main') type = segments[i];
+                }
+
+                const isBook = name.includes('книг') || name.includes('book');
+                requestedObjects.push({ name, size, type, isBg: type === 'bg', isBook });
+            });
+
+            return requestedObjects;
+        }
+
+        // === 6. СБОРКА КОМПОЗИЦИИ ===
+        async function composeScene() {
+            canvas.clear();
+            hideLayerPopup();
+            const statusEl = document.getElementById('status');
+            statusEl.innerText = "Загрузка фона...";
+
+            const schemeKey = document.getElementById('color-scheme').value;
+            const palette = palettes[schemeKey];
+            
+            canvas.setBackgroundColor(palette.bgColor, canvas.renderAll.bind(canvas));
+
+            // 1. Загружаем SVG-фон (он не должен выделяться, чтобы его нельзя было двигать)
+            try {
+                let bgResponse = await fetch(`svg/${palette.bgFile}.txt`);
+                if (bgResponse.ok) {
+                    let bgSvgText = await bgResponse.text();
+                    fabric.loadSVGFromString(bgSvgText, function(objects, options) {
+                        const bgObj = fabric.util.groupSVGElements(objects, options);
+                        bgObj.set({
+                            left: 400, top: 300,
+                            scaleX: 0.8, scaleY: 0.8,
+                            originX: 'center', originY: 'center',
+                            selectable: false, evented: false // Фон нельзя выделить
+                        });
+                        canvas.add(bgObj);
+                        canvas.sendToBack(bgObj);
+                        canvas.renderAll();
+                    });
+                }
+            } catch (e) {
+                console.warn("Ошибка загрузки SVG фона.");
+            }
+
+            statusEl.innerText = "Загрузка объектов...";
+
+            const inputText = document.getElementById('object-input').value;
+            let requestedObjects = parseObjects(inputText).slice(0, 6);
+
+            let objectsToDraw = [];
+            let missingFiles = [];
+
+            // 2. Загружаем объекты
+            for (let i = 0; i < requestedObjects.length; i++) {
+                const obj = requestedObjects[i];
+                let filePath = `svg/${obj.name}_${obj.size}.txt`; 
+                
+                try {
+                    let response = await fetch(filePath);
+                    if (!response.ok) {
+                        filePath = `svg/${obj.name}.txt`;
+                        response = await fetch(filePath);
+                        if (!response.ok) throw new Error("404");
+                    }
+                    
+                    let svgText = await response.text();
+                    svgText = processSVGColors(svgText, palette, obj.isBg);
+                    
+                    // Фиксированный масштаб
+                    let scale = obj.size === 'S' ? 0.15 : 0.35;
+                    if (obj.isBook && !obj.isBg) scale = 0.5;
+
+                    // === ПРАВИЛА РАСПОЛОЖЕНИЯ ===
+                    let x, y;
+                    
+                    if (obj.isBg) {
+                        x = Math.random() * 800;
+                        if (obj.isBook) {
+                            y = 400 + Math.random() * 300;
+                        } else {
+                            y = -100 + Math.random() * 300;
+                        }
+                    } else {
+                        x = 100 + Math.random() * 600;
+                        y = 150 + Math.random() * 300;
+                    }
+
+                    objectsToDraw.push({
+                        name: obj.name, svg: svgText.trim(),
+                        isBg: obj.isBg, isBook: obj.isBook,
+                        scale: scale, x: x, y: y
+                    });
+                } catch (error) {
+                    missingFiles.push(`${obj.name} (${obj.size})`);
+                }
+            }
+
+            if (objectsToDraw.length === 0) {
+                statusEl.innerHTML = `Ошибка: не удалось загрузить файлы.<br>Проверьте: <b>${missingFiles.join(', ')}</b>`;
+                return;
+            }
+
+            // Сортировка слоев (фоны вперед, главные поверх них)
+            objectsToDraw.sort((a, b) => {
+                if (a.isBg !== b.isBg) return a.isBg ? -1 : 1; 
+                return 0;
+            });
+
+            let loadedCount = 0;
+
+            objectsToDraw.forEach(objData => {
+                fabric.loadSVGFromString(objData.svg, function(objects, options) {
+                    const obj = fabric.util.groupSVGElements(objects, options);
+                    
+                    // === НАСТРОЙКИ ОБЪЕКТА ===
+                    // Делаем объекты выделяемыми (selectable: true) для работы меню слоев
+                    obj.set({
+                        left: objData.x, top: objData.y,
+                        scaleX: objData.scale, scaleY: objData.scale,
+                        angle: 0, // Строго без поворотов
+                        originX: 'center', originY: 'center',
+                        selectable: true, 
+                        evented: true,
+                        hoverCursor: 'pointer', // Удобный курсор при наведении
+                        borderColor: '#0078D7',
+                        cornerColor: '#0078D7',
+                        cornerSize: 8,
+                        transparentCorners: false,
+                        hasRotatingPoint: false // Отключаем точки поворота при ручном редактировании
+                    });
+
+                    canvas.add(obj);
+                    loadedCount++;
+                    
+                    if (loadedCount === objectsToDraw.length) {
+                        statusEl.innerHTML = missingFiles.length > 0 
+                            ? `Готово! <span style="color:#ff6b6b">(Нет файлов: ${missingFiles.join(', ')})</span>`
+                            : "Готово!";
+                        canvas.renderAll();
+                    }
+                });
+            });
+        }
+
+        // === 7. ЭКСПОРТ ===
+        function exportSVG() {
+            // Снимаем выделение перед экспортом, чтобы не было синих рамок
+            canvas.discardActiveObject();
+            canvas.renderAll();
+            
+            const svgString = canvas.toSVG();
+            const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'composition.svg';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        window.onload = composeScene;
+    </script>
+</body>
+</html>
