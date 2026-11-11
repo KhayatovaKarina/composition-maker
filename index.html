@@ -2,7 +2,6 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <!-- Добавляем мета-тег viewport для мобильных устройств -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Авто-сборщик (Слои и интерактив)</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
@@ -20,6 +19,7 @@
         label { font-size: 14px; font-weight: bold; margin-bottom: 5px; display: block; }
         #status { font-size: 13px; color: #ffd166; margin-top: 10px; min-height: 40px; word-wrap: break-word;}
 
+        /* Стили для всплывающего окна слоев */
         #layer-popup {
             position: absolute;
             display: none;
@@ -47,10 +47,9 @@
         /* Мобильная адаптация */
         @media (max-width: 800px) {
             body { flex-direction: column; }
-            #sidebar { width: 100%; height: auto; max-height: 45vh; box-shadow: 0 4px 10px rgba(0,0,0,0.5); padding: 15px; gap: 10px; }
-            #main { padding: 10px; height: 55vh; justify-content: flex-start; }
+            #sidebar { width: 100%; height: auto; max-height: 40vh; box-shadow: 0 4px 10px rgba(0,0,0,0.5); padding: 15px; gap: 10px; }
+            #main { padding: 10px; height: 60vh; justify-content: flex-start; }
             #canvas-container { max-width: 100%; margin: 0 auto; }
-            /* Увеличиваем шрифты для удобства нажатия */
             textarea, select, button { font-size: 16px; padding: 12px; }
         }
     </style>
@@ -110,25 +109,21 @@
         // === 3. АДАПТАЦИЯ РАЗМЕРА ХОЛСТА ===
         function fitCanvas() {
             const container = document.getElementById('canvas-container');
-            // Получаем доступную ширину контейнера (вычитаем отступы)
             const parentWidth = container.parentElement.clientWidth - 20; 
             
-            // Если ширина меньше 800 (мобилка), масштабируем
             if (parentWidth < 800) {
                 const scale = parentWidth / 800;
                 canvas.setZoom(scale);
                 canvas.setDimensions({ width: parentWidth, height: 600 * scale });
             } else {
-                // Если места достаточно, оставляем оригинальный размер
                 canvas.setZoom(1);
                 canvas.setDimensions({ width: 800, height: 600 });
             }
             canvas.calcOffset();
         }
 
-        // Вызываем при загрузке и при изменении размера окна
         window.addEventListener('resize', fitCanvas);
-        setTimeout(fitCanvas, 100); // Небольшая задержка для инициализации DOM
+        setTimeout(fitCanvas, 100);
 
         // === 4. ЛОГИКА ВСПЛЫВАЮЩЕГО ОКНА СЛОЕВ ===
         function showLayerPopup() {
@@ -138,12 +133,26 @@
                 return;
             }
 
-            const rect = activeObj.getBoundingRect();
+            // Получаем координаты объекта с учетом масштабирования (zoom)
+            const rect = activeObj.getBoundingRect(true);
             
             popup.style.display = 'flex';
-            popup.style.left = (rect.left + rect.width / 2 - 20) + 'px';
-            let topPos = rect.top - 60;
-            if (topPos < 0) topPos = rect.top + rect.height + 10;
+            
+            // Смещаем окно вправо от центра объекта, чтобы не мешать кнопке поворота
+            let leftPos = rect.left + rect.width / 2 + 25;
+            let topPos = rect.top - 20;
+            
+            // Если окно уходит за правый край экрана, показываем его слева
+            if (leftPos + 30 > canvas.getWidth()) {
+                leftPos = rect.left + rect.width / 2 - 55;
+            }
+            
+            // Если окно уходит за верхний край, показываем его снизу
+            if (topPos < 0) {
+                topPos = rect.top + rect.height + 10;
+            }
+            
+            popup.style.left = leftPos + 'px';
             popup.style.top = topPos + 'px';
         }
 
@@ -318,6 +327,7 @@
                 fabric.loadSVGFromString(objData.svg, function(objects, options) {
                     const obj = fabric.util.groupSVGElements(objects, options);
                     
+                    // === НАСТРОЙКИ ОБЪЕКТА ===
                     obj.set({
                         left: objData.x, top: objData.y,
                         scaleX: objData.scale, scaleY: objData.scale,
@@ -328,8 +338,20 @@
                         hoverCursor: 'pointer',
                         borderColor: '#0078D7',
                         cornerColor: '#0078D7',
-                        cornerSize: 10, // Чуть больше для мобильных
-                        transparentCorners: false
+                        cornerSize: 10,
+                        transparentCorners: false,
+                        // Запрещаем изменение размера
+                        lockScalingX: true,
+                        lockScalingY: true,
+                        lockSkewingX: true,
+                        lockSkewingY: true
+                    });
+
+                    // Скрываем все маркеры, кроме поворота (mtr)
+                    obj.setControlsVisibility({
+                        mt: false, mb: false, ml: false, mr: false, 
+                        tl: false, tr: false, bl: false, br: false, 
+                        mtr: true 
                     });
 
                     canvas.add(obj);
@@ -350,23 +372,19 @@
             canvas.discardActiveObject();
             canvas.renderAll();
             
-            // Временно сохраняем текущие настройки масштаба
             const oldZoom = canvas.getZoom();
             const oldWidth = canvas.getWidth();
             const oldHeight = canvas.getHeight();
 
-            // Сбрасываем к оригиналу 800x600 для скачивания
             canvas.setZoom(1);
             canvas.setDimensions({ width: 800, height: 600 });
 
             const svgString = canvas.toSVG();
             
-            // Возвращаем адаптивный масштаб обратно
             canvas.setZoom(oldZoom);
             canvas.setDimensions({ width: oldWidth, height: oldHeight });
             canvas.renderAll();
 
-            // Скачивание
             const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
